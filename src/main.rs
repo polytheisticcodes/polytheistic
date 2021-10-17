@@ -1,4 +1,11 @@
-extern crate rbpf;
+use std::path::PathBuf;
+
+use arc_swap::ArcSwap;
+use num_derive::*;
+use rbpf::disassembler;
+use rbpf::ebpf;
+use rbpf::ebpf::Insn;
+use std::sync::{Arc, Weak};
 
 fn main() {
     println!("Hello, world!");
@@ -22,4 +29,284 @@ fn main() {
     println!("Program run: {:?}", run);
     // Execute (interpret) the program. No argument required for this VM.
     assert_eq!(run.unwrap(), 0x6);
+
+    let ins = to_insr_vec(prog);
+    EbpfInstruction::build_graph(&ins);
+    return;
+    // disassembler::disassemble(prog);
+    // println!("\n\nOther example\n\n");
+    // let filename = "obj_files/load_elf__block_a_port.o";
+
+    // let path = PathBuf::from(filename);
+    // let file = match elf::File::open_path(&path) {
+    //     Ok(f) => f,
+    //     Err(e) => panic!("Error: {:?}", e),
+    // };
+
+    // let text_scn = match file.get_section(".classifier") {
+    //     Some(s) => s,
+    //     None => panic!("Failed to look up .classifier section"),
+    // };
+
+    // let prog = &text_scn.data;
+
+    // disassembler::disassemble(prog);
+
+    // let _e: Option<EbpfInstruction> = EbpfInstruction::from_u8(ebpf::LD_ABS_B);
+}
+
+impl EbpfInstruction {
+    ///
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num::FromPrimitive::from_u8(n)
+    }
+
+    pub fn from(n: &Insn) -> Self {
+        num::FromPrimitive::from_u8(n.opc).unwrap()
+    }
+
+    pub fn is_branch(&self) -> bool {
+        match self {
+            Self::JA
+            | Self::JEQ_IMM
+            | Self::JEQ_REG
+            | Self::JGT_IMM
+            | Self::JGT_REG
+            | Self::JGE_IMM
+            | Self::JGE_REG
+            | Self::JLT_IMM
+            | Self::JLT_REG
+            | Self::JLE_IMM
+            | Self::JLE_REG
+            | Self::JSET_IMM
+            | Self::JSET_REG
+            | Self::JNE_IMM
+            | Self::JNE_REG
+            | Self::JSGT_IMM
+            | Self::JSGT_REG
+            | Self::JSGE_IMM
+            | Self::JSGE_REG
+            | Self::JSLT_IMM
+            | Self::JSLT_REG
+            | Self::JSLE_IMM
+            | Self::JSLE_REG
+            | Self::CALL
+            | Self::TAIL_CALL
+            | Self::EXIT => true,
+            _ => false,
+        }
+    }
+    /// Return true if the instruction is a branch instruction
+    pub fn is_branch_insn(ins: &Insn) -> bool {
+        Self::from(ins).is_branch()
+    }
+
+    pub fn build_graph(ins: &[Insn]) -> usize {
+        let i2 = MetaInst::new_vec(ins);
+        let groups = i2.split_inclusive(|v| v.instr.is_branch());
+        for g in groups {
+            println!("Group {:?}", g);
+        }
+        42
+    }
+}
+#[derive(Debug, Clone)]
+pub struct GraphHolder {
+    instructions: Arc<Vec<Arc<MetaInst>>>,
+    groups: Arc<Vec<Vec<Arc<MetaInst>>>>,
+}
+
+impl GraphHolder {
+    pub fn new(ins: &[Insn]) -> Arc<GraphHolder> {
+        let tv = Arc::new(MetaInst::new_vec(ins));
+        let groups = tv
+            .split_inclusive(|v| v.instr.is_branch())
+            .map(|v| {
+                let mut ret = Vec::new();
+                ret.extend_from_slice(v);
+                ret
+            })
+            .collect();
+        let ret = Arc::new(GraphHolder {
+            instructions: tv.clone(),
+            groups: Arc::new(groups),
+        });
+
+        let to_set = Arc::new(Some(Arc::downgrade(&ret)));
+        for i in tv.iter() {
+            i.set_part_of(&to_set);
+        }
+
+        ret
+    }
+}
+
+#[derive(Debug)]
+pub struct MetaInst {
+    pub base: Insn,
+    pub instr: EbpfInstruction,
+    pub pos: usize,
+    pub part_of: ArcSwap<Option<Weak<GraphHolder>>>,
+}
+
+impl Clone for MetaInst {
+    fn clone(&self) -> Self {
+        MetaInst {
+            base: self.base.clone(),
+            instr: self.instr.clone(),
+            pos: self.pos,
+            part_of: ArcSwap::new(self.part_of.load().clone()),
+        }
+    }
+}
+
+impl MetaInst {
+    pub fn new_vec(ins: &[Insn]) -> Vec<Arc<MetaInst>> {
+        ins.iter()
+            .enumerate()
+            .map(|(pos, insn)| {
+                Arc::new(MetaInst {
+                    instr: EbpfInstruction::from(insn),
+                    base: insn.clone(),
+                    pos: pos,
+                    part_of: ArcSwap::new(Arc::new(None)),
+                })
+            })
+            .collect()
+    }
+
+    pub fn set_part_of(&self, to: &Arc<Option<Weak<GraphHolder>>>) -> &Self {
+        self.part_of.store(to.clone());
+        self
+    }
+
+    pub fn get_graph(&self) -> Option<Arc<GraphHolder>> {
+        match **self.part_of.load() {
+            Some(ref weak) => weak.upgrade(),
+            None => None,
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[derive(FromPrimitive, Debug, PartialEq, Eq, Clone)]
+pub enum EbpfInstruction {
+    LD_ABS_B = ebpf::LD_ABS_B as isize,
+    LD_ABS_H = ebpf::LD_ABS_H as isize,
+    LD_ABS_W = ebpf::LD_ABS_W as isize,
+    LD_ABS_DW = ebpf::LD_ABS_DW as isize,
+    LD_IND_B = ebpf::LD_IND_B as isize,
+    LD_IND_H = ebpf::LD_IND_H as isize,
+    LD_IND_W = ebpf::LD_IND_W as isize,
+    LD_IND_DW = ebpf::LD_IND_DW as isize,
+
+    LD_DW_IMM = ebpf::LD_DW_IMM as isize,
+
+    // BPF_LDX class
+    LD_B_REG = ebpf::LD_B_REG as isize,
+    LD_H_REG = ebpf::LD_H_REG as isize,
+    LD_W_REG = ebpf::LD_W_REG as isize,
+    LD_DW_REG = ebpf::LD_DW_REG as isize,
+
+    // BPF_ST class
+    ST_B_IMM = ebpf::ST_B_IMM as isize,
+    ST_H_IMM = ebpf::ST_H_IMM as isize,
+    ST_W_IMM = ebpf::ST_W_IMM as isize,
+    ST_DW_IMM = ebpf::ST_DW_IMM as isize,
+
+    // BPF_STX class
+    ST_B_REG = ebpf::ST_B_REG as isize,
+    ST_H_REG = ebpf::ST_H_REG as isize,
+    ST_W_REG = ebpf::ST_W_REG as isize,
+    ST_DW_REG = ebpf::ST_DW_REG as isize,
+    ST_W_XADD = ebpf::ST_W_XADD as isize,
+    ST_DW_XADD = ebpf::ST_DW_XADD as isize,
+
+    // BPF_ALU class
+    ADD32_IMM = ebpf::ADD32_IMM as isize,
+    ADD32_REG = ebpf::ADD32_REG as isize,
+    SUB32_IMM = ebpf::SUB32_IMM as isize,
+    SUB32_REG = ebpf::SUB32_REG as isize,
+    MUL32_IMM = ebpf::MUL32_IMM as isize,
+    MUL32_REG = ebpf::MUL32_REG as isize,
+    DIV32_IMM = ebpf::DIV32_IMM as isize,
+    DIV32_REG = ebpf::DIV32_REG as isize,
+    OR32_IMM = ebpf::OR32_IMM as isize,
+    OR32_REG = ebpf::OR32_REG as isize,
+    AND32_IMM = ebpf::AND32_IMM as isize,
+    AND32_REG = ebpf::AND32_REG as isize,
+    LSH32_IMM = ebpf::LSH32_IMM as isize,
+    LSH32_REG = ebpf::LSH32_REG as isize,
+    RSH32_IMM = ebpf::RSH32_IMM as isize,
+    RSH32_REG = ebpf::RSH32_REG as isize,
+    NEG32 = ebpf::NEG32 as isize,
+    MOD32_IMM = ebpf::MOD32_IMM as isize,
+    MOD32_REG = ebpf::MOD32_REG as isize,
+    XOR32_IMM = ebpf::XOR32_IMM as isize,
+    XOR32_REG = ebpf::XOR32_REG as isize,
+    MOV32_IMM = ebpf::MOV32_IMM as isize,
+    MOV32_REG = ebpf::MOV32_REG as isize,
+    ARSH32_IMM = ebpf::ARSH32_IMM as isize,
+    ARSH32_REG = ebpf::ARSH32_REG as isize,
+    LE = ebpf::LE as isize,
+    BE = ebpf::BE as isize,
+
+    // BPF_ALU64 class
+    ADD64_IMM = ebpf::ADD64_IMM as isize,
+    ADD64_REG = ebpf::ADD64_REG as isize,
+    SUB64_IMM = ebpf::SUB64_IMM as isize,
+    SUB64_REG = ebpf::SUB64_REG as isize,
+    MUL64_IMM = ebpf::MUL64_IMM as isize,
+    MUL64_REG = ebpf::MUL64_REG as isize,
+    DIV64_IMM = ebpf::DIV64_IMM as isize,
+    DIV64_REG = ebpf::DIV64_REG as isize,
+    OR64_IMM = ebpf::OR64_IMM as isize,
+    OR64_REG = ebpf::OR64_REG as isize,
+    AND_64_IMM = ebpf::AND64_IMM as isize,
+    AND64_REG = ebpf::AND64_REG as isize,
+    LSH64_IMM = ebpf::LSH64_IMM as isize,
+    LSH64_REG = ebpf::LSH64_REG as isize,
+    RSH64_IMM = ebpf::RSH64_IMM as isize,
+    RSH64_REG = ebpf::RSH64_REG as isize,
+    NEG64 = ebpf::NEG64 as isize,
+    MOD64_IMM = ebpf::MOD64_IMM as isize,
+    MOD64_REG = ebpf::MOD64_REG as isize,
+    XOR64_IMM = ebpf::XOR64_IMM as isize,
+    XOR64_REG = ebpf::XOR64_REG as isize,
+    MOV64_IMM = ebpf::MOV64_IMM as isize,
+    MOV64_REG = ebpf::MOV64_REG as isize,
+    ARSH64_IMM = ebpf::ARSH64_IMM as isize,
+    ARSH64_REG = ebpf::ARSH64_REG as isize,
+
+    // BPF_JMP class
+    JA = ebpf::JA as isize,
+    JEQ_IMM = ebpf::JEQ_IMM as isize,
+    JEQ_REG = ebpf::JEQ_REG as isize,
+    JGT_IMM = ebpf::JGT_IMM as isize,
+    JGT_REG = ebpf::JGT_REG as isize,
+    JGE_IMM = ebpf::JGE_IMM as isize,
+    JGE_REG = ebpf::JGE_REG as isize,
+    JLT_IMM = ebpf::JLT_IMM as isize,
+    JLT_REG = ebpf::JLT_REG as isize,
+    JLE_IMM = ebpf::JLE_IMM as isize,
+    JLE_REG = ebpf::JLE_REG as isize,
+    JSET_IMM = ebpf::JSET_IMM as isize,
+    JSET_REG = ebpf::JSET_REG as isize,
+    JNE_IMM = ebpf::JNE_IMM as isize,
+    JNE_REG = ebpf::JNE_REG as isize,
+    JSGT_IMM = ebpf::JSGT_IMM as isize,
+    JSGT_REG = ebpf::JSGT_REG as isize,
+    JSGE_IMM = ebpf::JSGE_IMM as isize,
+    JSGE_REG = ebpf::JSGE_REG as isize,
+    JSLT_IMM = ebpf::JSLT_IMM as isize,
+    JSLT_REG = ebpf::JSLT_REG as isize,
+    JSLE_IMM = ebpf::JSLE_IMM as isize,
+    JSLE_REG = ebpf::JSLE_REG as isize,
+    CALL = ebpf::CALL as isize,
+    TAIL_CALL = ebpf::TAIL_CALL as isize,
+    EXIT = ebpf::EXIT as isize,
+}
+
+pub fn to_insr_vec(prog: &[u8]) -> Vec<Insn> {
+    ebpf::to_insn_vec(prog)
 }

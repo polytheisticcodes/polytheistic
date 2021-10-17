@@ -6,4 +6,11 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+arc-swap = "1.4.0"
+elf = "0.0.10"
+im = {version = "~15", features = ["proptest", "serde"]}
+json = "~0.12"
+num = "0.4"
+num-derive = "0.3"
+num-traits = "0.2"
 rbpf = "0.1.0"
