@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+// use std::path::PathBuf;
 
 use arc_swap::ArcSwap;
 use num_derive::*;
-use rbpf::disassembler;
+// use rbpf::disassembler;
 use rbpf::ebpf;
 use rbpf::ebpf::Insn;
 use std::sync::{Arc, Weak};
@@ -55,61 +55,6 @@ fn main() {
     // let _e: Option<EbpfInstruction> = EbpfInstruction::from_u8(ebpf::LD_ABS_B);
 }
 
-impl EbpfInstruction {
-    ///
-    pub fn from_u8(n: u8) -> Option<Self> {
-        num::FromPrimitive::from_u8(n)
-    }
-
-    pub fn from(n: &Insn) -> Self {
-        num::FromPrimitive::from_u8(n.opc).unwrap()
-    }
-
-    pub fn is_branch(&self) -> bool {
-        match self {
-            Self::JA
-            | Self::JEQ_IMM
-            | Self::JEQ_REG
-            | Self::JGT_IMM
-            | Self::JGT_REG
-            | Self::JGE_IMM
-            | Self::JGE_REG
-            | Self::JLT_IMM
-            | Self::JLT_REG
-            | Self::JLE_IMM
-            | Self::JLE_REG
-            | Self::JSET_IMM
-            | Self::JSET_REG
-            | Self::JNE_IMM
-            | Self::JNE_REG
-            | Self::JSGT_IMM
-            | Self::JSGT_REG
-            | Self::JSGE_IMM
-            | Self::JSGE_REG
-            | Self::JSLT_IMM
-            | Self::JSLT_REG
-            | Self::JSLE_IMM
-            | Self::JSLE_REG
-            | Self::CALL
-            | Self::TAIL_CALL
-            | Self::EXIT => true,
-            _ => false,
-        }
-    }
-    /// Return true if the instruction is a branch instruction
-    pub fn is_branch_insn(ins: &Insn) -> bool {
-        Self::from(ins).is_branch()
-    }
-
-    pub fn build_graph(ins: &[Insn]) -> usize {
-        let i2 = MetaInst::new_vec(ins);
-        let groups = i2.split_inclusive(|v| v.instr.is_branch());
-        for g in groups {
-            println!("Group {:?}", g);
-        }
-        42
-    }
-}
 #[derive(Debug, Clone)]
 pub struct GraphHolder {
     instructions: Arc<Vec<Arc<MetaInst>>>,
@@ -141,6 +86,8 @@ impl GraphHolder {
     }
 }
 
+/// Holds the underlying `Insn` along with other information
+/// about the instruction
 #[derive(Debug)]
 pub struct MetaInst {
     pub base: Insn,
@@ -157,6 +104,14 @@ impl Clone for MetaInst {
             pos: self.pos,
             part_of: ArcSwap::new(self.part_of.load().clone()),
         }
+    }
+}
+
+impl PartialEq for MetaInst {
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.instr == other.instr && self.pos == other.pos
+        /* FIXME -- figure out if they refer to the same underlying object &&
+        self.part_of.load() == other.part_of.load() */
     }
 }
 
@@ -188,8 +143,45 @@ impl MetaInst {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstAction {
+    pub inst: Arc<MetaInst>,
+}
+
+impl InstAction {
+    pub fn new(inst: &Arc<MetaInst>) -> InstAction {
+        InstAction { inst: inst.clone() }
+    }
+
+    /// is the instruction an 8 bit instruction?
+    pub fn is_8bit(&self) -> bool {
+        self.inst.instr.is_8bit()
+    }
+
+    /// is the instruction an 16 bit instruction?
+    pub fn is_16bit(&self) -> bool {
+        self.inst.instr.is_16bit()
+    }
+
+    /// is the instruction an 32 bit instruction?
+    pub fn is_32bit(&self) -> bool {
+        self.inst.instr.is_32bit()
+    }
+
+    /// is the instruction an 64 bit instruction?
+    pub fn is_64bit(&self) -> bool {
+        self.inst.instr.is_64bit()
+    }
+
+    /// is the instruction a constant
+    pub fn is_const(&self) -> bool {
+        self.inst.instr.is_const()
+    }
+}
+
+/// The set of eBPF instructions
 #[allow(non_camel_case_types)]
-#[derive(FromPrimitive, Debug, PartialEq, Eq, Clone)]
+#[derive(FromPrimitive, ToPrimitive, Debug, PartialEq, Eq, Clone)]
 pub enum EbpfInstruction {
     LD_ABS_B = ebpf::LD_ABS_B as isize,
     LD_ABS_H = ebpf::LD_ABS_H as isize,
@@ -305,6 +297,93 @@ pub enum EbpfInstruction {
     CALL = ebpf::CALL as isize,
     TAIL_CALL = ebpf::TAIL_CALL as isize,
     EXIT = ebpf::EXIT as isize,
+}
+
+impl EbpfInstruction {
+    pub const CLASS_MASK: u8 = 0x7;
+    pub const SIZE_MASK: u8 = 0x18;
+    //pub const
+
+    /// convert from a byte to the corresponding eBPF instruction
+    pub fn from_u8(n: u8) -> Option<Self> {
+        num::FromPrimitive::from_u8(n)
+    }
+
+    /// Convert from an rBPF `Insn` into an instruction
+    pub fn from(n: &Insn) -> Self {
+        // not super keen on `unwrap`, but in this case,
+        // the `Insn` must also be a valid instruction
+        num::FromPrimitive::from_u8(n.opc).unwrap()
+    }
+
+    pub fn is_ld_immediate(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & Self::CLASS_MASK) == Some(ebpf::BPF_LD)
+    }
+
+    pub fn is_ld_reg(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & Self::CLASS_MASK) == Some(ebpf::BPF_LDX)
+    }
+
+    pub fn is_st_immediate(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & Self::CLASS_MASK) == Some(ebpf::BPF_ST)
+    }
+
+    pub fn is_st_reg(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & Self::CLASS_MASK) == Some(ebpf::BPF_STX)
+    }
+
+    pub fn is_branch(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & Self::CLASS_MASK) == Some(ebpf::BPF_JMP)
+    }
+
+    pub fn is_alu(&self) -> bool {
+        let tmp = num::ToPrimitive::to_u8(self).map(|x| x & Self::CLASS_MASK);
+
+        tmp == Some(ebpf::BPF_ALU) || tmp == Some(ebpf::BPF_ALU64)
+    }
+
+    /// Return true if the instruction is a branch instruction
+    pub fn is_branch_insn(ins: &Insn) -> bool {
+        Self::from(ins).is_branch()
+    }
+
+    /// is the instruction an 8 bit instruction?
+    pub fn is_8bit(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & 0x18) == Some(ebpf::BPF_B)
+    }
+
+    /// is the instruction an 16 bit instruction?
+    pub fn is_16bit(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & ebpf::BPF_H) == Some(ebpf::BPF_H)
+    }
+
+    /// is the instruction an 8 bit instruction?
+    pub fn is_32bit(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & ebpf::BPF_W) == Some(ebpf::BPF_W)
+    }
+
+    /// is the instruction an 64 bit instruction?
+    pub fn is_64bit(&self) -> bool {
+        num::ToPrimitive::to_u8(self).map(|x| x & ebpf::BPF_DW) == Some(ebpf::BPF_DW)
+    }
+
+    /// is the instruction a constant
+    pub fn is_const(&self) -> bool {
+        (self.is_ld_immediate() || self.is_alu())
+            && num::ToPrimitive::to_u8(self).map(|x| x & 0x8) == Some(0)
+    }
+
+    pub fn build_graph(ins: &[Insn]) -> usize {
+        let i2 = MetaInst::new_vec(ins);
+        let groups = i2.split_inclusive(|v| v.instr.is_branch());
+        for g in groups {
+            for v in g {
+                println!("Instruction {:?} is const {}", v, v.instr.is_const());
+            }
+            println!("Group {:?}", g);
+        }
+        42
+    }
 }
 
 pub fn to_insr_vec(prog: &[u8]) -> Vec<Insn> {
