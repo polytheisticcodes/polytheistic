@@ -47,3 +47,6 @@ and maybe now in hardware.
 Polytheistic is a project to convert eBPF (and maybe a subset of [WASM](https://en.wikipedia.org/wiki/WebAssembly))
 code to Verilog to use to describe hardware.
 
+Dual License: Apache 2.0 or MIT at your choice.
+
+Info on [Twitter](https://twitter.com/polytheisticcd)
