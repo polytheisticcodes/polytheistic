@@ -1,9 +1,16 @@
 [package]
+authors = ["David Pollak <feeder.of.the.bears@gmail.com>"]
 edition = "2021"
-name = "bearfeeding"
+homepage = "https://polytheistic.codes"
+license = "Apache-2.0"
+name = "polytheistic"
+repository = "https://github.com/polytheisticcodes/polytheistic"
 version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "poly"
+path = "src/poly/main.rs"
 
 [dependencies]
 arc-swap = "1.4.0"
